@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: maintenance-rag-api
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: EMBEDDING_MODEL
+        value: all-MiniLM-L6-v2
+      - key: CHROMA_COLLECTION_NAME
+        value: maintenance_manuals
+      - key: CHUNK_SIZE
+        value: "500"
+      - key: CHUNK_OVERLAP
+        value: "50"
+      - key: TOP_K_RETRIEVAL
+        value: "20"
+      - key: TOP_K_RERANK
+        value: "3"
+      - key: OLLAMA_MODEL
+        value: llama-3.1-8b-instant
