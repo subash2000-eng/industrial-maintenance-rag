@@ -1,20 +1,48 @@
+# ─── LLM & Ollama (local) ───────────────────────────────
 ollama==0.2.1
 langchain==0.2.6
 langchain-community==0.2.6
 langchain-ollama==0.1.1
+
+# ─── Groq (cloud LLM) ───────────────────────────────────
+groq==0.9.0
+langchain-groq==0.1.9
+
+# ─── Embeddings ─────────────────────────────────────────
 sentence-transformers==3.0.1
+
+# ─── Vector Database ────────────────────────────────────
 chromadb==0.5.3
+
+# ─── PDF Processing ─────────────────────────────────────
 pymupdf==1.24.5
+
+# ─── Hybrid Search ──────────────────────────────────────
 rank-bm25==0.2.2
+
+# ─── API ────────────────────────────────────────────────
 fastapi==0.111.0
 uvicorn==0.30.1
 pydantic==2.7.4
+python-multipart==0.0.9
+
+# ─── Data & Utils ───────────────────────────────────────
 pandas==2.2.2
 numpy==1.26.4
 python-dotenv==1.0.1
 tqdm==4.66.4
+
+# ─── Database ───────────────────────────────────────────
 sqlalchemy==2.0.31
+
+# ─── Frontend ───────────────────────────────────────────
 streamlit==1.36.0
 requests==2.32.3
+
+# ─── Multilingual ───────────────────────────────────────
+deep-translator==1.11.4
+langdetect==1.0.9
+
+# ─── Testing ────────────────────────────────────────────
 pytest==8.2.2
 httpx==0.27.0
