@@ -14,8 +14,8 @@ sentence-transformers==2.7.0
 # ─── Vector Database ────────────────────────────────────
 chromadb==0.4.24
 
-# ─── PDF Processing (pre-built wheel) ───────────────────
-PyMuPDF==1.23.26
+# ─── PDF Processing (pure Python — no C compiler needed)
+pypdf==4.2.0
 
 # ─── Hybrid Search ──────────────────────────────────────
 rank-bm25==0.2.2
