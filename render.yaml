@@ -3,7 +3,11 @@ services:
     name: maintenance-rag-api
     runtime: python
     pythonVersion: "3.11.9"
-    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    buildCommand: >
+      apt-get update &&
+      apt-get install -y build-essential &&
+      pip install --upgrade pip &&
+      pip install -r requirements.txt
     startCommand: uvicorn api.main:app --host 0.0.0.0 --port $PORT
     envVars:
       - key: GROQ_API_KEY
