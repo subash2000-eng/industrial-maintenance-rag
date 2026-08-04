@@ -41,25 +41,22 @@ from logger import (
 )
 
 # ════════════════════════════════════════════════════════
-# Cloud Embeddings Wrapper (Zero RAM Fix)
-# ════════════════════════════════════════════════════════
-class CloudEmbeddings:
-    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
-        self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
-        token = os.getenv('HF_API_TOKEN')
-        self.headers = {"Authorization": f"Bearer {token}"}
+import os
+from sentence_transformers import SentenceTransformer
+
+# ── Local Embeddings (Zero API dependency, 100% working on Render) ──
+class LocalEmbeddings:
+    def __init__(self, model_name="all-MiniLM-L6-v2"):
+        print(f"Loading local embedding model: {model_name}...")
+        self.model = SentenceTransformer(model_name)
+        print("✅ Local embedding model loaded successfully!")
 
     def encode(self, texts, **kwargs):
         if isinstance(texts, str):
             texts = [texts]
-        response = requests.post(
-            self.api_url, 
-            headers=self.headers, 
-            json={"inputs": texts, "options": {"wait_for_model": True}}
-        )
-        if response.status_code != 200:
-            raise Exception(f"HuggingFace API Error: {response.text}")
-        return response.json()
+        # Generate embeddings locally
+        embeddings = self.model.encode(texts, convert_to_numpy=True, normalize_embeddings=True)
+        return embeddings
         
     def embed_documents(self, texts):
         return self.encode(texts)
@@ -100,8 +97,8 @@ async def lifespan(app: FastAPI):
 
         # Load vector search collection (and override model with Cloud)
         _, state["collection"] = load_vector_components()
-        state["model"] = CloudEmbeddings()
-        print("  ✅ CloudEmbeddings loaded successfully (Zero RAM mode)")
+        state["model"] = LocalEmbeddings()
+        print("  ✅ LocalEmbeddings loaded successfully (Zero RAM mode)")
 
         print("  ✅ Using lightweight RRF ranking (no re-ranker)")
 
