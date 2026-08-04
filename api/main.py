@@ -1,6 +1,6 @@
 """
 Phase 4 - FastAPI Main Application
-Complete version with PDF Upload + Multilingual Support.
+Complete version with PDF Upload + Multilingual Support + Cloud Embeddings (Zero RAM).
 """
 
 # ── Fix imports FIRST ────────────────────────────────────
@@ -15,11 +15,12 @@ sys.path.insert(0, str(BASE_DIR / "api"))
 import os
 import json
 import traceback
-from datetime          import datetime
-from contextlib        import asynccontextmanager
-from dotenv            import load_dotenv
+import requests
+from datetime import datetime
+from contextlib import asynccontextmanager
+from dotenv import load_dotenv
 
-from fastapi            import (
+from fastapi import (
     FastAPI, HTTPException,
     BackgroundTasks, UploadFile, File
 )
@@ -40,6 +41,33 @@ from logger import (
 )
 
 # ════════════════════════════════════════════════════════
+# Cloud Embeddings Wrapper (Zero RAM Fix)
+# ════════════════════════════════════════════════════════
+class CloudEmbeddings:
+    def __init__(self, model_name="sentence-transformers/all-MiniLM-L6-v2"):
+        self.api_url = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{model_name}"
+        token = os.getenv('HF_API_TOKEN')
+        self.headers = {"Authorization": f"Bearer {token}"}
+
+    def encode(self, texts, **kwargs):
+        if isinstance(texts, str):
+            texts = [texts]
+        response = requests.post(
+            self.api_url, 
+            headers=self.headers, 
+            json={"inputs": texts, "options": {"wait_for_model": True}}
+        )
+        if response.status_code != 200:
+            raise Exception(f"HuggingFace API Error: {response.text}")
+        return response.json()
+        
+    def embed_documents(self, texts):
+        return self.encode(texts)
+        
+    def embed_query(self, text):
+        return self.encode(text)[0]
+
+# ════════════════════════════════════════════════════════
 # Global State
 # ════════════════════════════════════════════════════════
 state = {
@@ -51,35 +79,29 @@ state = {
     "ready"     : False
 }
 
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Load all components once at startup."""
     print("\n🚀 Starting RAG API — loading components...")
 
     try:
-        from bm25_search   import load_bm25_index
+        from bm25_search import load_bm25_index
         from vector_search import load_vector_components
-        from reranker      import get_reranker
-        from llm_chain     import load_llm, check_ollama_running
+        from reranker import get_reranker
+        from llm_chain import load_llm, check_ollama_running
 
         # Load BM25
         bm25_path = BASE_DIR / "data/processed_chunks/bm25_index.pkl"
         if bm25_path.exists():
             state["bm25"], state["chunks"] = load_bm25_index()
-            print(
-                f"  ✅ BM25 loaded: "
-                f"{len(state['chunks'])} chunks"
-            )
+            print(f"  ✅ BM25 loaded: {len(state['chunks'])} chunks")
         else:
-            print(
-                "⚠️  BM25 index not found — "
-                "run retrieval/bm25_search.py"
-            )
+            print("⚠️  BM25 index not found — run retrieval/bm25_search.py")
 
-        # Load vector search
-        state["model"], state["collection"] = \
-            load_vector_components()
+        # Load vector search collection (and override model with Cloud)
+        _, state["collection"] = load_vector_components()
+        state["model"] = CloudEmbeddings()
+        print("  ✅ CloudEmbeddings loaded successfully (Zero RAM mode)")
 
         print("  ✅ Using lightweight RRF ranking (no re-ranker)")
 
@@ -88,7 +110,7 @@ async def lifespan(app: FastAPI):
             state["llm"] = load_llm()
             print("✅ Ollama LLM connected")
         else:
-            print("⚠️  Ollama not running")
+            print("⚠️  Ollama not running (Using Groq API)")
 
         state["ready"] = True
         print("✅ All components loaded — API is ready\n")
@@ -98,7 +120,6 @@ async def lifespan(app: FastAPI):
         print(traceback.format_exc())
 
     yield
-
     print("\n🛑 API shutting down...")
 
 
@@ -128,16 +149,11 @@ app.add_middleware(
 # Helper
 # ════════════════════════════════════════════════════════
 def get_manual_counts() -> dict:
-    """
-    Read all metadata from ChromaDB and count
-    chunks per manual. Always returns fresh data.
-    """
+    """Read all metadata from ChromaDB and count chunks per manual."""
     if state["collection"] is None:
         return {}
     try:
-        all_data  = state["collection"].get(
-            include=["metadatas"]
-        )
+        all_data  = state["collection"].get(include=["metadatas"])
         metadatas = all_data.get("metadatas", [])
         counts    = {}
         for meta in metadatas:
@@ -151,20 +167,13 @@ def get_manual_counts() -> dict:
 # ════════════════════════════════════════════════════════
 # Endpoints
 # ════════════════════════════════════════════════════════
-
-@app.get(
-    "/health",
-    response_model=HealthResponse,
-    tags=["System"]
-)
+@app.get("/health", response_model=HealthResponse, tags=["System"])
 async def health_check():
     """Check if API and all components are running."""
     from llm_chain import check_ollama_running
-
     chroma_count = 0
     if state["collection"] is not None:
         chroma_count = state["collection"].count()
-
     return HealthResponse(
         status        ="ready" if state["ready"] else "loading",
         ollama_running=check_ollama_running(),
@@ -173,71 +182,37 @@ async def health_check():
     )
 
 
-@app.post(
-    "/query",
-    response_model=QueryResponse,
-    tags=["RAG"]
-)
-async def query_rag(
-    request         : QueryRequest,
-    background_tasks: BackgroundTasks
-):
-    """
-    Submit fault description in ANY language.
-    System auto-detects language, searches manuals,
-    and returns answer in the same language.
-    """
+@app.post("/query", response_model=QueryResponse, tags=["RAG"])
+async def query_rag(request: QueryRequest, background_tasks: BackgroundTasks):
+    """Submit fault description and get repair instructions."""
     if not state["ready"]:
-        raise HTTPException(
-            status_code=503,
-            detail="System is still loading. Please retry."
-        )
+        raise HTTPException(status_code=503, detail="System is still loading. Please retry.")
 
-    if state["collection"] is None or \
-       state["collection"].count() == 0:
-        raise HTTPException(
-            status_code=503,
-            detail="No manuals ingested. Upload a manual first."
-        )
+    if state["collection"] is None or state["collection"].count() == 0:
+        raise HTTPException(status_code=503, detail="No manuals ingested. Upload a manual first.")
 
     if state["bm25"] is None:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "BM25 index not loaded. "
-                "Run: python retrieval/bm25_search.py"
-            )
-        )
+        raise HTTPException(status_code=503, detail="BM25 index not loaded.")
 
     query_id = generate_query_id()
 
     try:
-        from reranker  import full_retrieval_pipeline
+        from reranker import full_retrieval_pipeline
         from llm_chain import generate_repair_instructions
-        from translator import (
-            translate_to_english,
-            translate_from_english,
-            get_language_name
-        )
+        from translator import translate_to_english, translate_from_english, get_language_name
 
         # ── Step 1: Detect language + translate to English ──
-        original_query            = request.query
-        english_query, detected_lang = translate_to_english(
-            original_query
-        )
+        original_query = request.query
+        english_query, detected_lang = translate_to_english(original_query)
         lang_name = get_language_name(detected_lang)
 
         if detected_lang != 'en':
-            print(
-                f"\n  🌐 Language detected: "
-                f"{lang_name} ({detected_lang})"
-            )
+            print(f"\n  🌐 Language detected: {lang_name} ({detected_lang})")
             print(f"  🔄 Translated to English: {english_query}")
         else:
             print(f"\n  🌐 Language: English")
 
         # ── Step 2: Retrieve using English query ────────────
-        
         retrieved = full_retrieval_pipeline(
             query             =english_query,
             bm25              =state["bm25"],
@@ -258,20 +233,12 @@ async def query_rag(
 
         # ── Step 4: Translate answer back to user language ──
         if detected_lang not in ['en', 'english']:
-            print(
-                f"  🔄 Translating answer to {lang_name}..."
-            )
-            result["answer"] = translate_from_english(
-                result["answer"],
-                detected_lang
-            )
+            print(f"  🔄 Translating answer to {lang_name}...")
+            result["answer"] = translate_from_english(result["answer"], detected_lang)
             print(f"  ✅ Answer translated to {lang_name}")
 
         # ── Step 5: Build response ──────────────────────────
-        sources = [
-            SourceCitation(**s)
-            for s in result["sources"]
-        ]
+        sources = [SourceCitation(**s) for s in result["sources"]]
 
         response = QueryResponse(
             query_id          =query_id,
@@ -299,49 +266,27 @@ async def query_rag(
             model           =result["model"],
             sources         =result["sources"]
         )
-
         return response
 
     except Exception as e:
         print(f"❌ Query error: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/upload-manual", tags=["Manuals"])
 async def upload_manual(file: UploadFile = File(...)):
-    """
-    Upload a PDF manual directly from the UI.
-    Extracts, chunks, embeds into ChromaDB,
-    and rebuilds BM25 index automatically.
-    """
+    """Upload a PDF manual directly from the UI."""
     if not file.filename.endswith('.pdf'):
-        raise HTTPException(
-            status_code=400,
-            detail="Only PDF files are accepted"
-        )
-
+        raise HTTPException(status_code=400, detail="Only PDF files are accepted")
     if state["collection"] is None:
-        raise HTTPException(
-            status_code=503,
-            detail="System not ready. Start API first."
-        )
-
+        raise HTTPException(status_code=503, detail="System not ready. Start API first.")
     if state["model"] is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Embedding model not loaded."
-        )
+        raise HTTPException(status_code=503, detail="Embedding model not loaded.")
 
     try:
         from pdf_extractor import extract_pdf
-        from chunker       import chunk_pages
-        from bm25_search   import (
-            build_bm25_index,
-            save_bm25_index
-        )
+        from chunker import chunk_pages
+        from bm25_search import build_bm25_index, save_bm25_index
 
         # ── Save uploaded PDF ────────────────────────────
         manuals_dir = BASE_DIR / "data/raw_manuals"
@@ -353,87 +298,52 @@ async def upload_manual(file: UploadFile = File(...)):
             f.write(content)
 
         print(f"\n📤 Uploaded: {file.filename}")
-        print(f"   Saved to: {save_path}")
 
         # ── Step 1: Extract text ─────────────────────────
         print("\n  Step 1: Extracting text from PDF...")
         pages = extract_pdf(str(save_path))
 
         if not pages:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    "No text extracted from this PDF. "
-                    "PDF might be scanned or image-based."
-                )
-            )
-
+            raise HTTPException(status_code=400, detail="No text extracted from this PDF.")
         print(f"  ✅ Extracted {len(pages)} pages")
 
-        # Save extracted JSON
         processed_dir = BASE_DIR / "data/processed_chunks"
         processed_dir.mkdir(parents=True, exist_ok=True)
         clean_stem  = save_path.stem.replace(" ", "_")
-        output_file = processed_dir / \
-            f"{clean_stem}_extracted.json"
+        output_file = processed_dir / f"{clean_stem}_extracted.json"
 
         with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(
-                pages, f,
-                indent=2,
-                ensure_ascii=False
-            )
+            json.dump(pages, f, indent=2, ensure_ascii=False)
 
         # ── Step 2: Chunk ────────────────────────────────
         print("\n  Step 2: Chunking pages...")
-        new_chunks = chunk_pages(
-            pages,
-            chunk_size   =500,
-            chunk_overlap=50
-        )
-
+        new_chunks = chunk_pages(pages, chunk_size=500, chunk_overlap=50)
         if not new_chunks:
-            raise HTTPException(
-                status_code=400,
-                detail="Could not create chunks from PDF."
-            )
-
+            raise HTTPException(status_code=400, detail="Could not create chunks from PDF.")
         print(f"  ✅ Created {len(new_chunks)} chunks")
 
         # ── Step 3: Delete old + embed new ───────────────
         print("\n  Step 3: Generating embeddings...")
-
-        # Delete old chunks for this manual
         try:
-            existing       = state["collection"].get(
-                include=["metadatas"]
-            )
+            existing       = state["collection"].get(include=["metadatas"])
             existing_ids   = set(existing['ids'])
             existing_metas = existing.get("metadatas", [])
             manual_name    = save_path.stem
             ids_to_delete  = []
 
             for idx, eid in enumerate(existing['ids']):
-                meta = existing_metas[idx] \
-                    if idx < len(existing_metas) else {}
+                meta = existing_metas[idx] if idx < len(existing_metas) else {}
                 if meta.get("manual_name") == manual_name:
                     ids_to_delete.append(eid)
 
             if ids_to_delete:
-                state["collection"].delete(
-                    ids=ids_to_delete
-                )
-                print(
-                    f"  🗑️  Removed {len(ids_to_delete)} "
-                    f"old chunks for '{manual_name}'"
-                )
+                state["collection"].delete(ids=ids_to_delete)
+                print(f"  🗑️  Removed {len(ids_to_delete)} old chunks for '{manual_name}'")
                 existing_ids -= set(ids_to_delete)
-
         except Exception as del_err:
             print(f"  ⚠️  Cleanup warning: {del_err}")
-            existing_ids = set()
 
-        # Embed in batches of 32
+        # Embed in batches
         batch_size  = 32
         added_count = 0
 
@@ -450,10 +360,10 @@ async def upload_manual(file: UploadFile = File(...)):
 
             ids   = [c['chunk_id'] for c in batch]
             docs  = texts
-            embs  = [
-                embeddings[j].tolist()
-                for j in range(len(batch))
-            ]
+            
+            # Safe list conversion for API response
+            embs = [list(e) if hasattr(e, 'tolist') else e for e in embeddings]
+            
             metas = [
                 {
                     "manual_name"  : c['manual_name'],
@@ -477,59 +387,31 @@ async def upload_manual(file: UploadFile = File(...)):
 
         total_now = state["collection"].count()
         print(f"  ✅ Added {added_count} chunks to ChromaDB")
-        print(f"  ✅ Total chunks now: {total_now}")
 
         # ── Step 4: Rebuild BM25 ─────────────────────────
         print("\n  Step 4: Rebuilding BM25 index...")
-
         all_chunks_file = processed_dir / "all_chunks.json"
         existing_chunks = []
 
         if all_chunks_file.exists():
-            with open(
-                all_chunks_file, 'r', encoding='utf-8'
-            ) as f:
+            with open(all_chunks_file, 'r', encoding='utf-8') as f:
                 existing_chunks = json.load(f)
 
-        # Remove old chunks for this manual from JSON
         manual_name     = save_path.stem
-        existing_chunks = [
-            c for c in existing_chunks
-            if c.get('manual_name') != manual_name
-        ]
-
-        # Add new chunks
+        existing_chunks = [c for c in existing_chunks if c.get('manual_name') != manual_name]
         all_chunks = existing_chunks + new_chunks
 
-        with open(
-            all_chunks_file, 'w', encoding='utf-8'
-        ) as f:
-            json.dump(
-                all_chunks, f,
-                indent=2,
-                ensure_ascii=False
-            )
+        with open(all_chunks_file, 'w', encoding='utf-8') as f:
+            json.dump(all_chunks, f, indent=2, ensure_ascii=False)
 
-        new_bm25, updated_chunks = build_bm25_index(
-            all_chunks
-        )
+        new_bm25, updated_chunks = build_bm25_index(all_chunks)
         save_bm25_index(new_bm25, updated_chunks)
 
-        # Update global state
         state["bm25"]   = new_bm25
         state["chunks"] = updated_chunks
 
-        print(
-            f"  ✅ BM25 rebuilt: "
-            f"{len(all_chunks)} total chunks"
-        )
-
-        # ── Get updated manual list ──────────────────────
         updated_counts = get_manual_counts()
         manual_list    = list(updated_counts.keys())
-
-        print(f"\n  ✅ Ingestion complete: {file.filename}")
-        print(f"  ✅ All manuals: {manual_list}")
 
         return {
             "status"      : "success",
@@ -538,12 +420,7 @@ async def upload_manual(file: UploadFile = File(...)):
             "chunks_added": added_count,
             "total_chunks": total_now,
             "manual_names": manual_list,
-            "message"     : (
-                f"✅ Successfully ingested {file.filename}. "
-                f"{len(pages)} pages → "
-                f"{added_count} chunks added. "
-                f"Total: {total_now} chunks."
-            )
+            "message"     : f"✅ Successfully ingested {file.filename}. {added_count} chunks added."
         }
 
     except HTTPException:
@@ -551,66 +428,31 @@ async def upload_manual(file: UploadFile = File(...)):
     except Exception as e:
         error_detail = traceback.format_exc()
         print(f"\n❌ Upload failed:\n{error_detail}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Ingestion failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
 
-@app.get(
-    "/manuals",
-    response_model=ManualsResponse,
-    tags=["Manuals"]
-)
+@app.get("/manuals", response_model=ManualsResponse, tags=["Manuals"])
 async def list_manuals():
-    """
-    List all ingested manuals.
-    Always reads fresh from ChromaDB.
-    """
+    """List all ingested manuals."""
     if state["collection"] is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Vector database not initialized"
-        )
-
+        raise HTTPException(status_code=503, detail="Vector database not initialized")
     try:
         counts = get_manual_counts()
-
-        print(
-            f"  📚 Manuals in ChromaDB: "
-            f"{list(counts.keys())}"
-        )
-
         manuals = [
-            ManualInfo(
-                manual_name=name,
-                chunk_count=count
-            )
+            ManualInfo(manual_name=name, chunk_count=count)
             for name, count in sorted(counts.items())
         ]
-
         return ManualsResponse(
             total_manuals=len(manuals),
             total_chunks =sum(m.chunk_count for m in manuals),
             manuals      =manuals
         )
-
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error reading manuals: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Error reading manuals: {str(e)}")
 
 
-@app.post(
-    "/feedback",
-    response_model=FeedbackResponse,
-    tags=["Feedback"]
-)
-async def submit_feedback(
-    request         : FeedbackRequest,
-    background_tasks: BackgroundTasks
-):
+@app.post("/feedback", response_model=FeedbackResponse, tags=["Feedback"])
+async def submit_feedback(request: FeedbackRequest, background_tasks: BackgroundTasks):
     """Submit rating for a query response."""
     background_tasks.add_task(
         log_feedback,
@@ -619,48 +461,22 @@ async def submit_feedback(
         was_helpful=request.was_helpful,
         comment    =request.comment
     )
-
     return FeedbackResponse(
         status  ="success",
         query_id=request.query_id,
         message =f"Thank you for rating {request.rating}/5"
     )
 
-
 @app.get("/history", tags=["System"])
 async def query_history(limit: int = 10):
     """View recent query history."""
     queries = get_recent_queries(limit=limit)
     stats   = get_feedback_stats()
-    return {
-        "recent_queries": queries,
-        "feedback_stats": stats
-    }
+    return {"recent_queries": queries, "feedback_stats": stats}
 
 
-# ════════════════════════════════════════════════════════
-# Entry Point
-# ════════════════════════════════════════════════════════
 if __name__ == "__main__":
     import uvicorn
-
     host = os.getenv("API_HOST", "0.0.0.0")
     port = int(os.getenv("API_PORT", 8000))
-
-    print(f"""
-╔══════════════════════════════════════════════════════╗
-║     Industrial Maintenance RAG — FastAPI Server      ║
-║     Version 2.0 — Multilingual Support               ║
-╠══════════════════════════════════════════════════════╣
-║  API URL  : http://localhost:{port}                   ║
-║  API Docs : http://localhost:{port}/docs              ║
-║  Health   : http://localhost:{port}/health            ║
-╚══════════════════════════════════════════════════════╝
-    """)
-
-    uvicorn.run(
-        "main:app",
-        host  =host,
-        port  =port,
-        reload=False
-    )
+    uvicorn.run("main:app", host=host, port=port, reload=False)
