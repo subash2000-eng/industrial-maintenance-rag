@@ -81,8 +81,7 @@ async def lifespan(app: FastAPI):
         state["model"], state["collection"] = \
             load_vector_components()
 
-        # Pre-load re-ranker
-        get_reranker()
+        print("  ✅ Using lightweight RRF ranking (no re-ranker)")
 
         # Load LLM
         if check_ollama_running():
