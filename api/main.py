@@ -278,16 +278,20 @@ async def upload_manual(file: UploadFile = File(...)):
     """Upload a PDF manual directly from the UI."""
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
-    if state["collection"] is None:
-        raise HTTPException(status_code=503, detail="System not ready. Start API first.")
+        
+    # ── AUTO-HEALING: Model allathu Database missing na, auto-aaga load pannum ──
     if state["model"] is None:
-        raise HTTPException(status_code=503, detail="Embedding model not loaded.")
+        print("⚠️ Model missing. Auto-loading CloudEmbeddings...")
+        state["model"] = CloudEmbeddings()
+        
+    if state["collection"] is None:
+        print("⚠️ Collection missing. Auto-loading ChromaDB...")
+        from vector_search import load_vector_components
+        _, state["collection"] = load_vector_components()
 
     try:
         from pdf_extractor import extract_pdf
-        from chunker import chunk_pages
-        from bm25_search import build_bm25_index, save_bm25_index
-
+        # ... (kela irukkura pazhaya code appadiye irukattum) ...
         # ── Save uploaded PDF ────────────────────────────
         manuals_dir = BASE_DIR / "data/raw_manuals"
         manuals_dir.mkdir(parents=True, exist_ok=True)
