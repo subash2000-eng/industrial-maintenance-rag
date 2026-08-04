@@ -8,9 +8,6 @@ langchain-ollama
 groq
 langchain-groq
 
-# ─── Embeddings (lightweight) ───────────────────────────
-sentence-transformers
-
 # ─── Vector Database ────────────────────────────────────
 chromadb
 
@@ -27,7 +24,6 @@ pydantic
 python-multipart
 
 # ─── Data & Utils ───────────────────────────────────────
-pandas
 numpy
 python-dotenv
 tqdm
