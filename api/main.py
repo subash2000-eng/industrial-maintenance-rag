@@ -279,7 +279,7 @@ async def upload_manual(file: UploadFile = File(...)):
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
         
-    # ── AUTO-HEALING: Model allathu Database missing na, auto-aaga load pannum ──
+    # ── AUTO-HEALING ──
     if state["model"] is None:
         print("⚠️ Model missing. Auto-loading CloudEmbeddings...")
         state["model"] = CloudEmbeddings()
@@ -290,8 +290,14 @@ async def upload_manual(file: UploadFile = File(...)):
         _, state["collection"] = load_vector_components()
 
     try:
+        # MISSING IMPORTS ADDED HERE ✅
         from pdf_extractor import extract_pdf
-        # ... (kela irukkura pazhaya code appadiye irukattum) ...
+        from chunker import chunk_pages
+        from bm25_search import build_bm25_index, save_bm25_index
+
+        # ── Save uploaded PDF ────────────────────────────
+        manuals_dir = BASE_DIR / "data/raw_manuals"
+        # ... unga code thodarum ...
         # ── Save uploaded PDF ────────────────────────────
         manuals_dir = BASE_DIR / "data/raw_manuals"
         manuals_dir.mkdir(parents=True, exist_ok=True)
