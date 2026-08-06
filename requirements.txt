@@ -1,45 +1,25 @@
-# ─── LLM & Ollama ───────────────────────────────────────
-sentence-transformers
 ollama
 langchain
 langchain-community
 langchain-ollama
-
-# ─── Groq ───────────────────────────────────────────────
 groq
 langchain-groq
-
-# ─── Vector Database ────────────────────────────────────
+sentence-transformers
 chromadb
-
-# ─── PDF Processing ─────────────────────────────────────
 pypdf
-
-# ─── Hybrid Search ──────────────────────────────────────
 rank-bm25
-
-# ─── API ────────────────────────────────────────────────
 fastapi
 uvicorn
 pydantic
 python-multipart
-
-# ─── Data & Utils ───────────────────────────────────────
+pandas
 numpy
 python-dotenv
 tqdm
-
-# ─── Database ───────────────────────────────────────────
 sqlalchemy
-
-# ─── Frontend ───────────────────────────────────────────
 streamlit
 requests
-
-# ─── Multilingual ───────────────────────────────────────
 deep-translator
 langdetect
-
-# ─── Testing ────────────────────────────────────────────
 pytest
 httpx
